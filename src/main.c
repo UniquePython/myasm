@@ -84,9 +84,9 @@ char *read_file(const char *file_name, const char *file_extension)
         return NULL;
     }
 
-    size_t text_length = (size_t)(file_size + 1);
+    size_t buffer_size = (size_t)(file_size + 1);
 
-    char *buffer = malloc(text_length);
+    char *buffer = malloc(buffer_size);
     if (!buffer)
     {
         ERR("Not enough memory to read file");
@@ -110,7 +110,7 @@ char *read_file(const char *file_name, const char *file_extension)
 
     fclose(file);
 
-    buffer[text_length - 1] = '\0';
+    buffer[buffer_size - 1] = '\0';
 
     return buffer;
 }
