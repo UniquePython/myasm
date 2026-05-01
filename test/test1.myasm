@@ -1,0 +1,7 @@
+; open a window and draw some things
+(window 800 600 "My First DSL")
+
+(loop
+  (clear RAYWHITE)
+  (draw-text "Hello!" 100 100 24 RED)
+  (draw-circle 400 300 -50.5 BLUE))

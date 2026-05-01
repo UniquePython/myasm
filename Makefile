@@ -1,6 +1,6 @@
 CC      = gcc
-CFLAGS  = -Wall -Wextra -Wshadow -Wdouble-promotion -Wformat=2 -Wundef -Wconversion -std=c11 -I include
-LIBS    =
+CFLAGS  = -Wall -Wextra -Wshadow -Wdouble-promotion -Wformat=2 -Wundef -Wconversion -std=c11 -I include $(shell pkg-config --cflags strlib)
+LDFLAGS = $(shell pkg-config --libs strlib)
 
 SRC_DIR   = src
 BUILD_DIR = build
@@ -14,13 +14,13 @@ TARGET = $(BUILD_DIR)/myasm
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
+	$(CC) -o $@ $^ $(LDFLAGS)
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 run: all
-	./$(TARGET)
+	./$(TARGET) test/test1.myasm
 
 clean:
 	rm -f $(BUILD_DIR)/*.o $(TARGET)

@@ -8,6 +8,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
+#include <ctype.h>
+
+#include <strlib-0.2.0/strlib.h>
 
 // Write formatted output to stdout with a newline appended.
 #define PRINTLN(fmt, ...)                \
@@ -115,6 +118,206 @@ char *read_file(const char *file_name, const char *file_extension)
     return buffer;
 }
 
+typedef enum
+{
+    TOKEN_KIND_LPAREN,
+    TOKEN_KIND_RPAREN,
+    TOKEN_KIND_SYMBOL,
+    TOKEN_KIND_INT,
+    TOKEN_KIND_FLOAT,
+    TOKEN_KIND_STRING,
+    TOKEN_KIND_EOF,
+    TOKEN_KIND_INVALID,
+} Token_Kind;
+
+typedef struct
+{
+    Token_Kind kind;
+    SV value;
+    size_t line;
+} Token;
+
+typedef struct
+{
+    SV src;
+    size_t line;
+} Lexer;
+
+Token make_token(Token_Kind kind, SV value, size_t line)
+{
+    return (Token){.kind = kind, .value = value, .line = line};
+}
+
+void advance(Lexer *l, size_t n)
+{
+    l->src = sv_slice(l->src, n, l->src.len);
+}
+
+char peek(const Lexer *l, size_t i)
+{
+    return l->src.data[i];
+}
+
+void skip_noise(Lexer *l)
+{
+    while (!sv_is_empty(l->src))
+    {
+        char c = peek(l, 0);
+
+        if (c == '\n')
+        {
+            l->line++;
+            advance(l, 1);
+        }
+        else if (isspace((unsigned char)c))
+        {
+            advance(l, 1);
+        }
+        else if (c == ';') // line comment
+        {
+            while (!sv_is_empty(l->src) && peek(l, 0) != '\n')
+                advance(l, 1);
+        }
+        else
+        {
+            break;
+        }
+    }
+}
+
+const char *token_kind_name(Token_Kind kind)
+{
+    switch (kind)
+    {
+    case TOKEN_KIND_LPAREN:
+        return "LPAREN";
+    case TOKEN_KIND_RPAREN:
+        return "RPAREN";
+    case TOKEN_KIND_SYMBOL:
+        return "SYMBOL";
+    case TOKEN_KIND_INT:
+        return "INT";
+    case TOKEN_KIND_FLOAT:
+        return "FLOAT";
+    case TOKEN_KIND_STRING:
+        return "STRING";
+    case TOKEN_KIND_EOF:
+        return "EOF";
+    case TOKEN_KIND_INVALID:
+        return "INVALID";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+Lexer new_lexer(SV src)
+{
+    return (Lexer){.src = src, .line = 1};
+}
+
+Token lexer_next(Lexer *l)
+{
+    skip_noise(l);
+
+    if (sv_is_empty(l->src))
+        return make_token(TOKEN_KIND_EOF, sv_from_parts("", 0), l->line);
+
+    const size_t line = l->line;
+    const char c = peek(l, 0);
+
+    // ── Single-character tokens ──────────────────────────────────────────────
+
+    if (c == '(')
+    {
+        SV val = sv_slice(l->src, 0, 1);
+        advance(l, 1);
+        return make_token(TOKEN_KIND_LPAREN, val, line);
+    }
+
+    if (c == ')')
+    {
+        SV val = sv_slice(l->src, 0, 1);
+        advance(l, 1);
+        return make_token(TOKEN_KIND_RPAREN, val, line);
+    }
+
+    // ── String literal ───────────────────────────────────────────────────────
+    // Opening " was consumed; value is the content without the quotes.
+
+    if (c == '"')
+    {
+        advance(l, 1); // skip opening "
+        size_t i = 0;
+        while (i < l->src.len && peek(l, i) != '"')
+        {
+            if (peek(l, i) == '\n')
+                l->line++;
+            i++;
+        }
+
+        if (i >= l->src.len) // reached EOF without closing "
+        {
+            SV bad = l->src;
+            advance(l, l->src.len);
+            return make_token(TOKEN_KIND_INVALID, bad, line);
+        }
+
+        SV val = sv_slice(l->src, 0, i);
+        advance(l, i + 1); // skip content + closing "
+        return make_token(TOKEN_KIND_STRING, val, line);
+    }
+
+    // ── Numeric literal ──────────────────────────────────────────────────────
+    // Matches: digits, or '-' immediately followed by a digit.
+
+    bool is_negative = (c == '-' && l->src.len > 1 && isdigit((unsigned char)peek(l, 1)));
+    if (isdigit((unsigned char)c) || is_negative)
+    {
+        size_t i = is_negative ? 1 : 0;
+        bool is_float = false;
+
+        while (i < l->src.len)
+        {
+            char ch = peek(l, i);
+            if (ch == '.' && !is_float)
+            {
+                is_float = true;
+                i++;
+            }
+            else if (isdigit((unsigned char)ch))
+            {
+                i++;
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        SV val = sv_slice(l->src, 0, i);
+        advance(l, i);
+        return make_token(is_float ? TOKEN_KIND_FLOAT : TOKEN_KIND_INT, val, line);
+    }
+
+    // ── Symbol ───────────────────────────────────────────────────────────────
+    // Anything that isn't whitespace, parens, or a quote.
+
+    {
+        size_t i = 0;
+        while (i < l->src.len)
+        {
+            char ch = peek(l, i);
+            if (isspace((unsigned char)ch) || ch == '(' || ch == ')' || ch == '"')
+                break;
+            i++;
+        }
+
+        SV val = sv_slice(l->src, 0, i);
+        advance(l, i);
+        return make_token(TOKEN_KIND_SYMBOL, val, line);
+    }
+}
+
 int main(int argc, char *argv[])
 {
     if (argc != 2)
@@ -124,7 +327,20 @@ int main(int argc, char *argv[])
     if (!program)
         return EXIT_FAILURE;
 
-    // TODO: Actual logic
+    Lexer l = new_lexer(sv_from_cstr(program));
+    Token t;
+
+    while ((t = lexer_next(&l)).kind != TOKEN_KIND_EOF)
+    {
+        if (t.kind == TOKEN_KIND_INVALID)
+        {
+            ERR("line %zu: unterminated string", t.line);
+            free(program);
+            return EXIT_FAILURE;
+        }
+
+        printf("line %2zu  %-8s  \"" SV_FMT "\"\n", t.line, token_kind_name(t.kind), SV_ARGS(t.value));
+    }
 
     free(program);
 
